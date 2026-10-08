@@ -588,23 +588,6 @@ private:
 
 // ---------- Pane ----------
 
-// Pane readability.
-//
-// Both panes hear all audio, so the pane for the language nobody is speaking
-// emits either almost nothing or fragments of nonsense. Rather than mute it
-// (which risks hiding real text when the heuristic is wrong), a pane that has
-// been quiet while another pane is producing is shown dimmed. The text is
-// still there and still selectable -- only its colour changes.
-
-// Window over which output is judged. Long enough to ride out a pause in
-// speech, short enough to react within a few seconds.
-static constexpr int PANE_WINDOW_LINES = 12;
-static constexpr int PANE_WINDOW_CHARS = 600;
-
-// A pane needs at least this much text per completed line to count as
-// producing real transcript rather than fragments.
-static constexpr int PANE_MIN_CHARS_PER_LINE = 8;
-
 struct Pane {
     GtkWidget *box = nullptr;
     GtkWidget *header = nullptr;
@@ -616,15 +599,7 @@ struct Pane {
     GtkTextTag *stamp_tag = nullptr;
     GtkTextTag *error_tag = nullptr;
     GtkTextTag *body_tag = nullptr;
-    GtkTextTag *dim_tag = nullptr;
-    bool dimmed = false;          // true when currently shown dimmed
     GtkTextMark *mark = nullptr;
-
-    // Rolling output counters, used to decide whether this pane is producing
-    // plausible transcript (see pane_output_healthy()).
-    int  recent_chars = 0;
-    int  recent_lines = 0;
-    bool ever_produced = false;
 
     GtkWidget *paned = nullptr;
     GtkWidget *float_window = nullptr;
@@ -638,63 +613,6 @@ struct Pane {
 };
 
 static std::vector<Pane*> g_panes;
-
-// Halve the rolling counters once they get large, so the window reflects
-// recent output rather than the whole session.
-static void pane_roll_window(Pane *p) {
-    p->recent_chars /= 2;
-    p->recent_lines /= 2;
-}
-
-// True when the pane's recent output looks like real transcript: enough text
-// per completed line. A pane reading nonsense can still emit lines, but they
-// are short fragments, so the ratio stays low.
-static bool pane_output_healthy(const Pane *p) {
-    if (!p->ever_produced) return false;
-    if (p->recent_lines == 0) return false;
-    return (p->recent_chars / p->recent_lines) >= PANE_MIN_CHARS_PER_LINE;
-}
-
-static void pane_retag_body(Pane *p);
-
-// Re-evaluate which panes should be dimmed.
-//
-// A pane is dimmed only when another pane is clearly producing and it is not.
-// With one pane, or while nothing has been produced yet, nothing is dimmed --
-// the heuristic stays silent until it has evidence.
-static void refresh_pane_emphasis() {
-    if (g_panes.size() < 2) {
-        for (Pane *p : g_panes) p->dimmed = false;
-        return;
-    }
-
-    bool any_healthy = false;
-    for (Pane *p : g_panes) if (pane_output_healthy(p)) any_healthy = true;
-
-    for (Pane *p : g_panes) {
-        // Never dim a pane that is itself producing well, and never dim
-        // anything until at least one pane is clearly working.
-        const bool want = any_healthy && !pane_output_healthy(p);
-        if (want == p->dimmed) continue;
-        p->dimmed = want;
-        pane_retag_body(p);
-    }
-}
-
-// Re-apply the body/dim tag across everything already in the buffer. Tags are
-// fixed at insert time, so a pane that changes state needs its existing text
-// recoloured or the change would only affect new lines.
-static void pane_retag_body(Pane *p) {
-    if (!p->buffer || !p->body_tag || !p->dim_tag) return;
-    GtkTextTag *want = p->dimmed ? p->dim_tag : p->body_tag;
-    GtkTextTag *other = p->dimmed ? p->body_tag : p->dim_tag;
-
-    GtkTextIter start, end;
-    gtk_text_buffer_get_start_iter(p->buffer, &start);
-    gtk_text_buffer_get_end_iter(p->buffer, &end);
-    gtk_text_buffer_remove_tag(p->buffer, other, &start, &end);
-    gtk_text_buffer_apply_tag(p->buffer, want, &start, &end);
-}
 static GtkWidget *g_main_window = nullptr;
 static GtkApplication *g_app = nullptr;
 static int g_body_font_pt = DEFAULT_BODY_PT;
@@ -1484,17 +1402,6 @@ static void on_view_map(GtkWidget *, gpointer data) {
     if (g_follow_tail) scroll_pane_to_bottom(p);
 }
 
-// Accent colour per pane, so the two transcripts are told apart at a glance.
-// Chosen to stay legible on both the light and dark themes.
-static const char *pane_accent_color(int idx) {
-    switch (idx) {
-        case 0:  return "#4a9eff";   // blue
-        case 1:  return "#e0a030";   // amber
-        case 2:  return "#5fc98a";   // green
-        default: return "#c07ad0";   // violet
-    }
-}
-
 static Pane *build_pane(const std::string &language, int idx) {
     Pane *p = new Pane();
     p->language = language;
@@ -1512,14 +1419,6 @@ static Pane *build_pane(const std::string &language, int idx) {
     GtkWidget *lang_lbl = gtk_label_new(language.c_str());
     PangoAttrList *attrs = pango_attr_list_new();
     pango_attr_list_insert(attrs, pango_attr_weight_new(PANGO_WEIGHT_BOLD));
-    // Same accent as the body text, so the pane is identifiable even while
-    // its transcript is dimmed.
-    GdkRGBA accent;
-    if (gdk_rgba_parse(&accent, pane_accent_color(idx)))
-        pango_attr_list_insert(attrs, pango_attr_foreground_new(
-            (guint16)(accent.red * 65535.0),
-            (guint16)(accent.green * 65535.0),
-            (guint16)(accent.blue * 65535.0)));
     gtk_label_set_attributes(GTK_LABEL(lang_lbl), attrs);
     pango_attr_list_unref(attrs);
     gtk_box_append(GTK_BOX(p->header), lang_lbl);
@@ -1558,15 +1457,7 @@ static Pane *build_pane(const std::string &language, int idx) {
     p->error_tag = gtk_text_buffer_create_tag(p->buffer, nullptr,
                                               "scale", 0.5, "foreground", "#888888", nullptr);
 
-    // Each pane gets its own accent colour so the two transcripts are
-    // distinguishable at a glance. The dim tag is applied when a pane is
-    // producing nothing useful (it is only hearing the other language); it
-    // lightens the text, never hides it, so nothing is lost.
-    p->body_tag = gtk_text_buffer_create_tag(
-        p->buffer, nullptr, "foreground", pane_accent_color(idx), nullptr);
-    p->dim_tag = gtk_text_buffer_create_tag(
-        p->buffer, nullptr, "foreground", "#6a6a6a", nullptr);
-    p->dimmed = false;
+    p->body_tag = gtk_text_buffer_create_tag(p->buffer, nullptr, nullptr);
 
     GtkTextIter end;
     gtk_text_buffer_get_end_iter(p->buffer, &end);
@@ -1663,22 +1554,10 @@ static gboolean apply_update(gpointer data) {
 
     gtk_text_buffer_move_mark(buf, p->mark, &pos);
 
-    // Track output shape so pane_output_healthy() can tell a pane hearing its
-    // own language from one mostly hearing the other.
-    if (u->is_final) {
-        p->recent_chars += u->body.size();
-        ++p->recent_lines;
-        p->ever_produced = true;
-        if (p->recent_chars > PANE_WINDOW_CHARS ||
-            p->recent_lines > PANE_WINDOW_LINES)
-            pane_roll_window(p);
-        refresh_pane_emphasis();
-    }
-
     gtk_text_buffer_insert_with_tags(buf, &pos, u->prefix.c_str(), -1,
                                      p->stamp_tag, nullptr);
     gtk_text_buffer_insert_with_tags(buf, &pos, u->body.c_str(), -1,
-                                     p->dimmed ? p->dim_tag : p->body_tag, nullptr);
+                                     p->body_tag, nullptr);
 
     if (u->is_final) {
         gtk_text_buffer_insert(buf, &pos, "\n", -1);

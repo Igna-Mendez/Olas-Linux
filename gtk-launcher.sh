@@ -47,17 +47,18 @@ CONF_FILE="$SCRIPT_DIR/olas-1.1.conf"
 [[ -f "$CONF_FILE" ]] || CONF_FILE=""
 
 # ---- per-language default arch ------------------------------------------
-# English defaults to Medium Streaming (5): it is the most complete model
-# available for English and the resource planner sizes the thread budget so it
-# runs in real time (measured RTF ~0.46 with the 1.1 threading model).
+# OLAS 1.1 has two modes, defined by the English model:
 #
-# Spanish has no Medium model, so it uses Small Streaming (4), which is the
-# only Spanish streaming model that exists.
+#   Normal mode (default)  Medium English + Small Spanish.
+#                          English gets 3 cores, Spanish 1. More accurate.
+#   Potato mode            Small English + Small Spanish.
+#                          One core per language, 2 total. Ultralight.
 #
-# Either can be overridden at launch without re-downloading anything:
+# Spanish always uses Small Streaming: no Medium Spanish model exists.
 #
-#     OLAS_MOONSHINE_ARCHS=4,4 ./gtk-launcher.sh    # both Small (lowest CPU)
-#     OLAS_MOONSHINE_ARCHS=5,4 ./gtk-launcher.sh    # the default, explicit
+# Override with OLAS_MOONSHINE_ARCHS, or the friendly OLAS_MODE below.
+#     OLAS_MODE=potato ./gtk-launcher.sh     # both Small, lowest CPU
+#     OLAS_MODE=normal ./gtk-launcher.sh     # the default, explicit
 #
 default_arch_for() {
     case "$1" in
@@ -96,6 +97,18 @@ if [[ -n "${OLAS_MOONSHINE_LANGS:-}" ]]; then
 else
     LANG_PASS=()
     LANG_ARR=(en es)
+fi
+
+# ---- mode ---------------------------------------------------------------
+# OLAS_MODE is the friendly spelling of the English model choice; explicit
+# OLAS_MOONSHINE_ARCHS still wins if both are given.
+if [[ -n "${OLAS_MODE:-}" && -z "${OLAS_MOONSHINE_ARCHS:-}" ]]; then
+    case "$(echo "$OLAS_MODE" | tr '[:upper:]' '[:lower:]')" in
+        potato|light|ultralight|small) OLAS_MOONSHINE_ARCHS="4,4" ;;
+        normal|medium|default)         OLAS_MOONSHINE_ARCHS="5,4" ;;
+        *) err "OLAS_MODE='$OLAS_MODE' not recognised (use 'normal' or 'potato')"
+           exit 1 ;;
+    esac
 fi
 
 # ---- resolve model path + arch per language -----------------------------

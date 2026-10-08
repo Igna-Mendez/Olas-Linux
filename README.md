@@ -4,9 +4,9 @@ Real-time local speech-to-text via Moonshine Voice. Two language panes side by
 side, one model each, running entirely on your machine. No cloud, no telemetry,
 no network at runtime.
 
-Defaults to **Medium Streaming English** and **Small Streaming Spanish**. The
-build ships all three models (Medium English, Small English, Small Spanish)
-and the launcher selects between them.
+Defaults to **Normal mode**: Medium Streaming English and Small Streaming
+Spanish. The build ships all three models (Medium English, Small English,
+Small Spanish) and the launcher selects between them.
 
 **Accuracy is the design goal.** Where a trade-off exists between staying
 current and keeping every word, this program keeps the word.
@@ -167,18 +167,31 @@ feature can be redesigned cleanly. Anything rebuilt here must stay inside that
 Streaming Spanish model, and the Small Streaming English model, so every
 configuration is available offline.
 
-## Choosing a model
+## Modes
 
-The default is **Medium Streaming for English** (the most complete English
-model) and **Small Streaming for Spanish** (there is no Medium Spanish model).
-The resource planner sizes the thread budget so the pair runs in real time.
+Version 1.1 has two modes. Which one runs is decided by the **English** model;
+Spanish is always Small Streaming because no Medium Spanish model exists.
 
-Either can be changed at launch, without re-downloading anything:
+| mode | English | Spanish | cores |
+| ---- | ------- | ------- | ----- |
+| **Normal** (default) | Medium Streaming | Small Streaming | 3 + 1 |
+| **Potato** | Small Streaming | Small Streaming | 1 + 1 |
+
+Normal mode is more accurate and uses 4 cores. Potato mode is the ultralight
+option: one core per language, 2 in total, lower CPU and slightly less
+accurate. Both keep up with real time.
 
 ```sh
-OLAS_MOONSHINE_ARCHS=5,4 ./gtk-launcher.sh    # en=Medium, es=Small (the default)
-OLAS_MOONSHINE_ARCHS=4,4 ./gtk-launcher.sh    # both Small (lowest CPU)
-OLAS_MOONSHINE_LANGS=en ./gtk-launcher.sh     # English only
+./gtk-launcher.sh                   # normal mode (default)
+OLAS_MODE=potato ./gtk-launcher.sh  # potato mode
+OLAS_MODE=normal ./gtk-launcher.sh  # explicit
+```
+
+`OLAS_MOONSHINE_ARCHS` still works if you want to be specific:
+
+```sh
+OLAS_MOONSHINE_ARCHS=4,4 ./gtk-launcher.sh   # same as potato
+OLAS_MOONSHINE_LANGS=en ./gtk-launcher.sh    # English only
 ```
 
 Architecture numbers: `0`=Tiny, `1`=Base, `2`=Tiny Streaming,
@@ -201,27 +214,29 @@ Moonshine's API but unsupported and rejected.)
 -h, --help                   Show help
 ```
 
-## Readability: pane colouring
+## Readability: unsolved
 
-Both panes hear all audio, so the pane for the language nobody is speaking
-emits either almost nothing or a scatter of short fragments. Rather than mute
-it —
-muting risks hiding real text if the guess is wrong — a pane that has gone
-quiet while another is producing is shown **dimmed**: same text, same position,
-still selectable, just a lighter colour.
+Each pane hears all audio, so the pane for the language nobody is speaking
+still emits text. That text is the program's main readability problem.
 
-Each pane also gets its own accent colour (blue for the first, amber for the
-second) on the body text and the language label, so the two transcripts are
-told apart at a glance even when one is dimmed.
+Two attempts have been made and both were dropped:
 
-The judgement is deliberately cheap — two integers per pane updated per
-completed line, no text analysis and no extra model:
+**Auto-muting the quiet pane.** Rejected before implementation: muting risks
+hiding real text, and the whole point of this program is not losing any.
 
-* A pane counts as producing when its recent lines average at least 8
-  characters. Fragments fall well below that; real sentences are far above.
-* Nothing is dimmed until at least one pane is clearly producing.
-* The counters halve every ~12 lines, so a change of speaker flips the
-  emphasis back within a few seconds.
+**Dimming the pane that is not producing.** Built, tested, and removed. The
+signal it relied on — that wrong-language output is short fragments with little
+text per line — does not hold. Spanish transcribing English produces
+normal-length, plausible-looking words ("la Clem", "Texas or Rollery"), so both
+panes look equally healthy to any measure of text *shape* and the emphasis
+never fired correctly.
+
+The conclusion: **text statistics cannot separate a good transcript from a
+fluent-looking bad one.** The output is not structurally different, so no
+cheap heuristic will work. A real solution needs the language of the audio to
+be known, which means language identification — a model in the middle of the
+pipeline and the compute cost that comes with it. That trade-off has not been
+made yet.
 
 ### Dual Small: 1+1 measured against 2+2
 
@@ -248,10 +263,10 @@ mask, the slowest model sat at RTF ~0.95; split 3+1 it drops to ~0.81.
 
 The rule depends on what is loaded:
 
-| models | split | why |
-| ------ | ----- | --- |
-| Medium + Small (default) | **3 + 1** | the extra core is worth more to the slower model |
-| Small + Small | **1 + 1** | Small runs well single-threaded, so the pair stays genuinely light — 2 cores for the whole process |
+| mode | split | why |
+| ---- | ----- | --- |
+| **Normal** (Medium + Small) | **3 + 1** | the extra core is worth more to the slower model |
+| **Potato** (Small + Small) | **1 + 1** | Small runs well single-threaded, so the pair stays genuinely light — 2 cores for the whole process |
 | one model | 4 | nothing to share with |
 
 After both transcribers are built the process widens back to the whole budget,
