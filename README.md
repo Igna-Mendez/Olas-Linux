@@ -19,6 +19,7 @@ current and keeping every word, this program keeps the word.
 > caught it. Treat the code accordingly: it works, but it has not had a
 > conventional human review.
 
+#You can find a Windows version with release ready to run here: https://github.com/Igna-Mendez/Open-Local-Audio-Scribe-OLAS/
 ---
 
 ## What it does
